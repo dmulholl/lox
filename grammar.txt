@@ -1,6 +1,3 @@
-
-
-
 (*
             -------------------
             Operator Precedence
@@ -19,16 +16,36 @@ Equality        == !=               Left
 *)
 
 
+(* Statements *)
+
+program = declaration* EOF ;
+
+declaration = variable_dec | statement ;
+
+variable_dec = "var" IDENTIFIER ( "=" expression )? ";" ;
+
+statement = expr_stmt | print_stmt ;
+
+expr_stmt = expression ";" ;
+
+print_stmt = "print" expression ";" ;
+
+
+(* Expressions *)
+
 expression = equality ;
 
 equality = comparison ( ( "!=" | "==" ) comparison )* ;
 
 comparison = addition ( ( ">" | ">=" | "<" | "<+" ) addition )* ;
 
-addition = multiplication ( ( "-" | "+") multiplication )* ;
+addition = multiplication ( ( "-" | "+" ) multiplication )* ;
 
 multiplication = unary ( ( "/" | "*" ) unary )* ;
 
 unary = ( "!" | "-" ) unary | primary ;
 
-primary = NUMBER | STRING | "false" | "true" | "nil" | "(" expression ")" ;
+primary = "true" | "false" | "nil" | "this"
+        | NUMBER | STRING
+        | "(" expression ")"
+        | IDENTIFIER ;

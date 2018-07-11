@@ -289,6 +289,36 @@ class UnaryExpr(Expr):
         self.right = right
 
 
+class VariableExpr(Expr):
+    def __init__(self, name: Token):
+        self.name = name
+
+
+# ------------------------------------------------------------------------------
+# Statements.
+# ------------------------------------------------------------------------------
+
+
+class Stmt:
+    pass
+
+
+class ExpressionStmt(Stmt):
+    def __init__(self, expression: Expr):
+        self.expression = expression
+
+
+class PrintStmt(Stmt):
+    def __init__(self, expression: Expr):
+        self.expression = expression
+
+
+class VarStmt(Stmt):
+    def __init__(self, name: Token, initializer: Expr):
+        self.name = name
+        self.initializer = initializer
+
+
 # ------------------------------------------------------------------------------
 # Parser.
 # ------------------------------------------------------------------------------
@@ -305,10 +335,45 @@ class Parser:
         self.current = 0
 
     def parse(self):
+        statements = list()
+        while not self.is_at_end():
+            statements.append(self.declaration())
+        return statements
+
+    # ------------------------------------------------------------------------
+    # Statement parsers.
+    # ------------------------------------------------------------------------
+
+    def declaration(self):
         try:
-            return self.expression()
+            if self.match(TokType.Var):
+                return self.var_statement()
+            return self.statement()
         except ParsingError:
-            return None
+            self.synchronize()
+
+    def var_statement(self):
+        name = self.consume(TokType.Identifier, "Expect variable name.")
+        initializer = None
+        if self.match(TokType.Equal):
+            initializer = self.expression()
+        self.consume(TokType.Semicolon, "Expect ';' after variable declaration.")
+        return VarStmt(name, initializer)
+
+    def statement(self):
+        if self.match(TokType.Print):
+            return self.print_statement()
+        return self.expression_statement()
+
+    def print_statement(self):
+        expr = self.expression()
+        self.consume(TokType.Semicolon, "Expect ';' after value.")
+        return PrintStmt(expr)
+
+    def expression_statement(self):
+        expr = self.expression()
+        self.consume(TokType.Semicolon, "Expect ';' after expression.")
+        return ExpressionStmt(expr)
 
     # ------------------------------------------------------------------------
     # Expression parsers.
@@ -375,6 +440,8 @@ class Parser:
             expr = self.expression()
             self.consume(TokType.RightParen, "Expect ')' after expression.")
             return GroupingExpr(expr)
+        if self.match(TokType.Identifier):
+            return VariableExpr(self.previous())
         parsing_error(self.peek(), "Expect expression.")
         raise ParsingError()
 
@@ -473,17 +540,60 @@ class RuntimeError(Exception):
         self.message = message
 
 
+class Environment:
+
+    def __init__(self):
+        self.values = dict()
+
+    def define(self, name: str, value):
+        self.values[name] = value
+
+    def get(self, name: Token):
+        if name.lexeme in self.values:
+            return self.values[name.lexeme]
+        raise RuntimeError(name, f"Undefined variable '{name.lexeme}'.")
+
+
 class Interpreter:
 
     def __init__(self):
-        pass
+        self.environment = Environment()
 
-    def interpret(self, expr):
+    def interpret(self, statements):
         try:
-            value = self.eval(expr)
-            print(self.stringify(value))
+            for statement in statements:
+                self.execute(statement)
         except RuntimeError as error:
             runtime_error(error)
+
+    # ------------------------------------------------------------------------
+    # Execute statements.
+    # ------------------------------------------------------------------------
+
+    def execute(self, stmt: Stmt):
+        if isinstance(stmt, ExpressionStmt):
+            self.exec_expression_stmt(stmt)
+        elif isinstance(stmt, PrintStmt):
+            self.exec_print_stmt(stmt)
+        elif isinstance(stmt, VarStmt):
+            self.exec_var_stmt(stmt)
+
+    def exec_expression_stmt(self, stmt: ExpressionStmt):
+        self.eval(stmt.expression)
+
+    def exec_print_stmt(self, stmt: PrintStmt):
+        value = self.eval(stmt.expression)
+        print(self.stringify(value))
+
+    def exec_var_stmt(self, stmt: VarStmt):
+        value = None
+        if stmt.initializer is not None:
+            value = self.eval(stmt.initializer)
+        self.environment.define(stmt.name.lexeme, value)
+
+    # ------------------------------------------------------------------------
+    # Evaluate expressions.
+    # ------------------------------------------------------------------------
 
     def eval(self, expr: Expr):
         if isinstance(expr, LiteralExpr):
@@ -494,14 +604,16 @@ class Interpreter:
             return self.eval_unary(expr)
         elif isinstance(expr, BinaryExpr):
             return self.eval_binary(expr)
+        elif isinstance(expr, VariableExpr):
+            return self.eval_variable(expr)
 
-    def eval_literal(self, expr):
+    def eval_literal(self, expr: LiteralExpr):
         return expr.value
 
-    def eval_grouping(self, expr):
+    def eval_grouping(self, expr: GroupingExpr):
         return self.eval(expr.expression)
 
-    def eval_unary(self, expr):
+    def eval_unary(self, expr: UnaryExpr):
         right = self.eval(expr.right)
         if expr.operator.type == TokType.Minus:
             self.check_float_operand(expr.operator, right)
@@ -509,10 +621,9 @@ class Interpreter:
         elif expr.operator.type == TokType.Bang:
             return not self.is_truthy(right)
 
-    def eval_binary(self, expr):
+    def eval_binary(self, expr: BinaryExpr):
         left = self.eval(expr.left)
         right = self.eval(expr.right)
-
         if expr.operator.type == TokType.Greater:
             self.check_float_operands(expr.operator, left, right)
             return left > right
@@ -542,6 +653,12 @@ class Interpreter:
         elif expr.operator.type == TokType.EqualEqual:
             return self.is_equal(left, right)
 
+    def eval_variable(self, expr: VariableExpr):
+        return self.environment.get(expr.name)
+
+    # ------------------------------------------------------------------------
+    # Helpers.
+    # ------------------------------------------------------------------------
 
     def is_truthy(self, value):
         if value is None:
@@ -585,7 +702,6 @@ class Interpreter:
                 text = text[:-2]
             return text
         return str(value)
-
 
 
 # ------------------------------------------------------------------------------
@@ -634,12 +750,12 @@ def run(source):
         return
 
     parser = Parser(tokens)
-    expr = parser.parse()
+    statements = parser.parse()
     #print(Printer().tostring(expr))
     if had_parsing_error:
         return
 
-    interpreter.interpret(expr)
+    interpreter.interpret(statements)
 
 
 def run_prompt():
@@ -653,10 +769,12 @@ def run_prompt():
 
 def run_file(path):
     run(open(path).read())
-    if had_error:
+    if had_lexing_error:
         sys.exit(1)
-    if had_runtime_error:
+    if had_parsing_error:
         sys.exit(2)
+    if had_runtime_error:
+        sys.exit(3)
 
 
 def main():
