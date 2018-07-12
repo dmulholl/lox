@@ -11,7 +11,10 @@ Multiplication  / *                 Left
 Addition        - +                 Left
 Comparison      > >= < <=           Left
 Equality        == !=               Left
+Logical And     &&                  Left
+Logical Or      ||                  Left
 *Ternary        ?:                  None
+Assignment      =                   Right
 
 *)
 
@@ -24,18 +27,36 @@ declaration = var_declaration | statement ;
 
 var_declaration = "var" IDENTIFIER ( "=" expression )? ";" ;
 
-statement = expr_stmt | print_stmt ;
+statement = expr_stmt | if_stmt | print_stmt | while_stmt | for_stmt | block ;
 
 expr_stmt = expression ";" ;
 
+if_stmt = "if" "(" expression ")" statement ( "else" statement )? ;
+
 print_stmt = "print" expression ";" ;
+
+while_stmt = while "(" expression ")" statement;
+
+for_stmt = "for"
+           "("
+           ( var_declaration | expr_stmt | ";" )
+           expression? ";"
+           expression?
+           ")"
+           statement ;
+
+block = "{" declaration* "}" ;
 
 
 (* Expressions *)
 
 expression = assignment ;
 
-assignment = IDENTIFIER "=" assignment | equality ;
+assignment = IDENTIFIER "=" assignment | logic_or ;
+
+logic_or = logic_and ( "or" logic_and )* ;
+
+logic_and = equality ( "and" equality )* ;
 
 equality = comparison ( ( "!=" | "==" ) comparison )* ;
 

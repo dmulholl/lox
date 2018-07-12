@@ -5,6 +5,9 @@
 
 import sys
 import enum
+import time
+
+from typing import List, Any
 
 
 # ------------------------------------------------------------------------------
@@ -163,12 +166,12 @@ class Scanner:
             if self.match('='):
                 self.add_token(TokType.LessEqual)
             else:
-                self.add_token(TokType.Equal)
+                self.add_token(TokType.Less)
         elif c == '>':
             if self.match('='):
                 self.add_token(TokType.GreaterEqual)
             else:
-                self.add_token(TokType.Equal)
+                self.add_token(TokType.Greater)
 
         # Slash or comment.
         elif c == '/':
@@ -300,6 +303,13 @@ class AssignExpr(Expr):
         self.value = value
 
 
+class LogicalExpr(Expr):
+    def __init__(self, left: Expr, operator: Token, right: Expr):
+        self.left = left
+        self.operator = operator
+        self.right = right
+
+
 # ------------------------------------------------------------------------------
 # Statements.
 # ------------------------------------------------------------------------------
@@ -323,6 +333,24 @@ class VarStmt(Stmt):
     def __init__(self, name: Token, initializer: Expr):
         self.name = name
         self.initializer = initializer
+
+
+class BlockStmt(Stmt):
+    def __init__(self, statements: List[Stmt]):
+        self.statements = statements
+
+
+class IfStmt(Stmt):
+    def __init__(self, condition: Expr, then_branch: Stmt, else_branch: Stmt):
+        self.condition = condition
+        self.then_branch = then_branch
+        self.else_branch = else_branch
+
+
+class WhileStmt(Stmt):
+    def __init__(self, condition: Expr, body: Stmt):
+        self.condition = condition
+        self.body = body
 
 
 # ------------------------------------------------------------------------------
@@ -369,6 +397,14 @@ class Parser:
     def statement(self):
         if self.match(TokType.Print):
             return self.print_statement()
+        elif self.match(TokType.If):
+            return self.if_statement()
+        elif self.match(TokType.While):
+            return self.while_statement()
+        elif self.match(TokType.For):
+            return self.for_statement()
+        elif self.match(TokType.LeftBrace):
+            return BlockStmt(self.block_statement())
         return self.expression_statement()
 
     def print_statement(self):
@@ -381,6 +417,59 @@ class Parser:
         self.consume(TokType.Semicolon, "Expect ';' after expression.")
         return ExpressionStmt(expr)
 
+    def block_statement(self):
+        statements = []
+        while not self.check(TokType.RightBrace) and not self.is_at_end():
+            statements.append(self.declaration())
+        self.consume(TokType.RightBrace, "Expect '}' after block.")
+        return statements
+
+    def if_statement(self):
+        self.consume(TokType.LeftParen, "Expect '(' after 'if'.");
+        condition = self.expression()
+        self.consume(TokType.RightParen, "Expect ')' after if condition.")
+        then_branch = self.statement()
+        else_branch = None
+        if self.match(TokType.Else):
+            else_branch = self.statement()
+        return IfStmt(condition, then_branch, else_branch)
+
+    def while_statement(self):
+        self.consume(TokType.LeftParen, "Expect '(' after 'while'.");
+        condition = self.expression()
+        self.consume(TokType.RightParen, "Expect ')' after condition.")
+        body = self.statement()
+        return WhileStmt(condition, body)
+
+    def for_statement(self):
+        self.consume(TokType.LeftParen, "Expect '(' after 'for'.");
+        initializer, condition, increment = None, None, None
+
+        if self.match(TokType.Semicolon):
+            initializer = None
+        elif self.match(TokType.Var):
+            initializer = self.var_statement()
+        else:
+            initializer = self.expression_statement()
+
+        if not self.check(TokType.Semicolon):
+            condition = self.expression()
+        self.consume(TokType.Semicolon, "Expect ';' after loop condition.")
+
+        if not self.check(TokType.RightParen):
+            increment = self.expression()
+        self.consume(TokType.RightParen, "Expect ')' after 'for' clauses.")
+
+        body = self.statement()
+        if increment is not None:
+            body = BlockStmt([body, ExpressionStmt(increment)])
+        if condition is None:
+            condition = LiteralExpr(True)
+        body = WhileStmt(condition, body)
+        if initializer is not None:
+            body = BlockStmt([initializer, body])
+        return body
+
     # ------------------------------------------------------------------------
     # Expression parsers.
     # ------------------------------------------------------------------------
@@ -389,13 +478,29 @@ class Parser:
         return self.assignment()
 
     def assignment(self):
-        expr = self.equality()
+        expr = self.logical_or()
         if self.match(TokType.Equal):
             equals = self.previous()
             value = self.assignment()
             if isinstance(expr, VariableExpr):
                 return AssignExpr(expr.name, value)
             parsing_error(equals, "Invalid assignment target.")
+        return expr
+
+    def logical_or(self):
+        expr = self.logical_and()
+        while self.match(TokType.Or):
+            operator = self.previous()
+            right = self.logical_and()
+            expr = LogicalExpr(expr, operator, right)
+        return expr
+
+    def logical_and(self):
+        expr = self.equality()
+        while self.match(TokType.And):
+            operator = self.previous()
+            right = self.equality()
+            expr = LogicalExpr(expr, operator, right)
         return expr
 
     def equality(self):
@@ -558,20 +663,26 @@ class RuntimeError(Exception):
 
 class Environment:
 
-    def __init__(self):
+    def __init__(self, enclosing: 'Environment' = None):
         self.values = dict()
+        self.enclosing = enclosing
 
-    def define(self, name: str, value):
+    def define(self, name: str, value: Any):
         self.values[name] = value
 
     def get(self, name: Token):
         if name.lexeme in self.values:
             return self.values[name.lexeme]
+        if self.enclosing is not None:
+            return self.enclosing.get(name)
         raise RuntimeError(name, f"Undefined variable '{name.lexeme}'.")
 
-    def assign(self, name: Token, value):
+    def assign(self, name: Token, value: Any):
         if name.lexeme in self.values:
             self.values[name.lexeme] = value
+            return
+        if self.enclosing is not None:
+            self.enclosing.assign(name, value)
             return
         raise RuntimeError(name, f"Undefined variable '{name.lexeme}'.")
 
@@ -599,6 +710,12 @@ class Interpreter:
             self.exec_print_stmt(stmt)
         elif isinstance(stmt, VarStmt):
             self.exec_var_stmt(stmt)
+        elif isinstance(stmt, BlockStmt):
+            self.exec_block_stmt(stmt)
+        elif isinstance(stmt, IfStmt):
+            self.exec_if_stmt(stmt)
+        elif isinstance(stmt, WhileStmt):
+            self.exec_while_stmt(stmt)
 
     def exec_expression_stmt(self, stmt: ExpressionStmt):
         self.eval(stmt.expression)
@@ -612,6 +729,28 @@ class Interpreter:
         if stmt.initializer is not None:
             value = self.eval(stmt.initializer)
         self.environment.define(stmt.name.lexeme, value)
+
+    def exec_block_stmt(self, stmt: BlockStmt):
+        self.exec_block(stmt.statements, Environment(self.environment))
+
+    def exec_block(self, statements: List[Stmt], environment: Environment):
+        previous_environment = self.environment
+        try:
+            self.environment = environment
+            for statement in statements:
+                self.execute(statement)
+        finally:
+            self.environment = previous_environment
+
+    def exec_if_stmt(self, stmt: IfStmt):
+        if self.is_truthy(self.eval(stmt.condition)):
+            self.execute(stmt.then_branch)
+        elif stmt.else_branch is not None:
+            self.execute(stmt.else_branch)
+
+    def exec_while_stmt(self, stmt: WhileStmt):
+        while self.is_truthy(self.eval(stmt.condition)):
+            self.execute(stmt.body)
 
     # ------------------------------------------------------------------------
     # Evaluate expressions.
@@ -630,6 +769,8 @@ class Interpreter:
             return self.eval_variable(expr)
         elif isinstance(expr, AssignExpr):
             return self.eval_assign(expr)
+        elif isinstance(expr, LogicalExpr):
+            return self.eval_logical(expr)
 
     def eval_literal(self, expr: LiteralExpr):
         return expr.value
@@ -684,6 +825,16 @@ class Interpreter:
         value = self.eval(expr.value)
         self.environment.assign(expr.name, value)
         return value
+
+    def eval_logical(self, expr: LogicalExpr):
+        left = self.eval(expr.left)
+        if expr.operator.type == TokType.Or:
+            if self.is_truthy(left):
+                return left
+        else:
+            if not self.is_truthy(left):
+                return left
+        return self.eval(expr.right)
 
     # ------------------------------------------------------------------------
     # Helpers.
