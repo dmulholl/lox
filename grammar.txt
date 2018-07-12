@@ -20,9 +20,9 @@ Equality        == !=               Left
 
 program = declaration* EOF ;
 
-declaration = variable_dec | statement ;
+declaration = var_declaration | statement ;
 
-variable_dec = "var" IDENTIFIER ( "=" expression )? ";" ;
+var_declaration = "var" IDENTIFIER ( "=" expression )? ";" ;
 
 statement = expr_stmt | print_stmt ;
 
@@ -33,7 +33,9 @@ print_stmt = "print" expression ";" ;
 
 (* Expressions *)
 
-expression = equality ;
+expression = assignment ;
+
+assignment = IDENTIFIER "=" assignment | equality ;
 
 equality = comparison ( ( "!=" | "==" ) comparison )* ;
 

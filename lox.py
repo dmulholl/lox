@@ -294,6 +294,12 @@ class VariableExpr(Expr):
         self.name = name
 
 
+class AssignExpr(Expr):
+    def __init__(self, name: Token, value: Expr):
+        self.name = name
+        self.value = value
+
+
 # ------------------------------------------------------------------------------
 # Statements.
 # ------------------------------------------------------------------------------
@@ -380,7 +386,17 @@ class Parser:
     # ------------------------------------------------------------------------
 
     def expression(self):
-        return self.equality()
+        return self.assignment()
+
+    def assignment(self):
+        expr = self.equality()
+        if self.match(TokType.Equal):
+            equals = self.previous()
+            value = self.assignment()
+            if isinstance(expr, VariableExpr):
+                return AssignExpr(expr.name, value)
+            parsing_error(equals, "Invalid assignment target.")
+        return expr
 
     def equality(self):
         expr = self.comparison()
@@ -553,6 +569,12 @@ class Environment:
             return self.values[name.lexeme]
         raise RuntimeError(name, f"Undefined variable '{name.lexeme}'.")
 
+    def assign(self, name: Token, value):
+        if name.lexeme in self.values:
+            self.values[name.lexeme] = value
+            return
+        raise RuntimeError(name, f"Undefined variable '{name.lexeme}'.")
+
 
 class Interpreter:
 
@@ -606,6 +628,8 @@ class Interpreter:
             return self.eval_binary(expr)
         elif isinstance(expr, VariableExpr):
             return self.eval_variable(expr)
+        elif isinstance(expr, AssignExpr):
+            return self.eval_assign(expr)
 
     def eval_literal(self, expr: LiteralExpr):
         return expr.value
@@ -655,6 +679,11 @@ class Interpreter:
 
     def eval_variable(self, expr: VariableExpr):
         return self.environment.get(expr.name)
+
+    def eval_assign(self, expr: AssignExpr):
+        value = self.eval(expr.value)
+        self.environment.assign(expr.name, value)
+        return value
 
     # ------------------------------------------------------------------------
     # Helpers.
