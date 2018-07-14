@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 # ------------------------------------------------------------------------------
-# Lox implemented in Python 3.
+# Bob Nystrom's Lox language implemented in Python.
 # ------------------------------------------------------------------------------
 
 import sys
