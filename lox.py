@@ -310,6 +310,13 @@ class LogicalExpr(Expr):
         self.right = right
 
 
+class CallExpr(Expr):
+    def __init__(self, callee: Expr, paren: Token, arguments: List[Expr]):
+        self.callee = callee
+        self.paren = paren
+        self.arguments = arguments
+
+
 # ------------------------------------------------------------------------------
 # Statements.
 # ------------------------------------------------------------------------------
@@ -546,7 +553,28 @@ class Parser:
             operator = self.previous()
             right = self.unary()
             return UnaryExpr(operator, right)
-        return self.primary()
+        return self.call()
+
+    def call(self):
+        expr = self.primary()
+        while True:
+            if self.match(TokType.LeftParen):
+                expr = self.finish_call(expr)
+            else:
+                break
+        return expr
+
+    def finish_call(self, callee: Expr):
+        arguments = list()
+        if not self.check(TokType.RightParen):
+            while True:
+                if len(arguments) >= 8:
+                    parsing_error(self.peek(), "Cannot have more than 8 arguments.")
+                arguments.append(self.expression())
+                if not self.match(TokType.Comma):
+                    break
+        paren = self.consume(TokType.RightParen, "Expect ')' after arguments.")
+        return CallExpr(callee, paren, arguments)
 
     def primary(self):
         if self.match(TokType.TokFalse):
@@ -651,6 +679,23 @@ class Printer:
 
 
 # ------------------------------------------------------------------------------
+# Builtins.
+# ------------------------------------------------------------------------------
+
+
+class ClockFunc:
+
+    def call(self, interpreter: 'Interpreter', arguments: List):
+        return time.perf_counter()
+
+    def arity(self):
+        return 0
+
+    def __str__(self):
+        return "<builtin fn: clock>"
+
+
+# ------------------------------------------------------------------------------
 # Interpreter.
 # ------------------------------------------------------------------------------
 
@@ -691,6 +736,8 @@ class Interpreter:
 
     def __init__(self):
         self.environment = Environment()
+        self.globals = Environment()
+        self.globals.define("clock", ClockFunc())
 
     def interpret(self, statements):
         try:
@@ -771,6 +818,8 @@ class Interpreter:
             return self.eval_assign(expr)
         elif isinstance(expr, LogicalExpr):
             return self.eval_logical(expr)
+        elif isinstance(expr, CallExpr):
+            return self.eval_call(expr)
 
     def eval_literal(self, expr: LiteralExpr):
         return expr.value
@@ -835,6 +884,22 @@ class Interpreter:
             if not self.is_truthy(left):
                 return left
         return self.eval(expr.right)
+
+    def eval_call(self, expr: CallExpr):
+        callee = self.eval(expr.callee)
+        arguments = list()
+        for argument in expr.arguments:
+            arguments.append(self.eval(argument))
+        if not hasattr(callee, 'call'):
+            raise RuntimeError(
+                expr.paren,
+                "Can only call functions and classes.")
+        if len(arguments) != callee.arity():
+            raise RuntimeError(
+                expr.paren,
+                f"Expected {callee.arity()} arguments, got {len(arguments)}.")
+        return callee.call(self, arguments)
+
 
     # ------------------------------------------------------------------------
     # Helpers.
