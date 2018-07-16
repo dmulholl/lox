@@ -7,7 +7,7 @@ import sys
 import enum
 import time
 
-from typing import List, Any
+from typing import List, Any, Union
 
 
 # ------------------------------------------------------------------------------
@@ -360,6 +360,19 @@ class WhileStmt(Stmt):
         self.body = body
 
 
+class FunctionStmt(Stmt):
+    def __init__(self, name: Token, parameters: List[Token], body: List[Stmt]):
+        self.name = name
+        self.parameters = parameters
+        self.body = body
+
+
+class ReturnStmt(Stmt):
+    def __init__(self, keyword: Token, value: Expr):
+        self.keyword = keyword
+        self.value = value
+
+
 # ------------------------------------------------------------------------------
 # Parser.
 # ------------------------------------------------------------------------------
@@ -375,7 +388,7 @@ class Parser:
         self.tokens = tokens
         self.current = 0
 
-    def parse(self):
+    def parse(self) -> List[Stmt]:
         statements = list()
         while not self.is_at_end():
             statements.append(self.declaration())
@@ -389,6 +402,8 @@ class Parser:
         try:
             if self.match(TokType.Var):
                 return self.var_statement()
+            if self.match(TokType.Fun):
+                return self.function("function")
             return self.statement()
         except ParsingError:
             self.synchronize()
@@ -412,6 +427,8 @@ class Parser:
             return self.for_statement()
         elif self.match(TokType.LeftBrace):
             return BlockStmt(self.block_statement())
+        elif self.match(TokType.Return):
+            return self.return_statement()
         return self.expression_statement()
 
     def print_statement(self):
@@ -476,6 +493,30 @@ class Parser:
         if initializer is not None:
             body = BlockStmt([initializer, body])
         return body
+
+    def function(self, kind: str):
+        name = self.consume(TokType.Identifier, f"Expect {kind} name.")
+        self.consume(TokType.LeftParen, f"Expect '(' after {kind} name.")
+        parameters = list()
+        if not self.check(TokType.RightParen):
+            while True:
+                if len(parameters) >= 8:
+                    parsing_error(self.peek(), "Cannot have more than 8 parameters.")
+                parameters.append(self.consume(TokType.Identifier, "Expect parameter name."))
+                if not self.match(TokType.Comma):
+                    break
+        self.consume(TokType.RightParen, "Expect ')' after parameters.")
+        self.consume(TokType.LeftBrace, f"Expect '{{' before {kind} body.")
+        body = self.block_statement()
+        return FunctionStmt(name, parameters, body)
+
+    def return_statement(self):
+        keyword = self.previous()
+        value = None
+        if not self.check(TokType.Semicolon):
+            value = self.expression()
+        self.consume(TokType.Semicolon, "Expect ';' after return value.")
+        return ReturnStmt(keyword, value)
 
     # ------------------------------------------------------------------------
     # Expression parsers.
@@ -679,20 +720,178 @@ class Printer:
 
 
 # ------------------------------------------------------------------------------
-# Builtins.
+# Variable resolver.
 # ------------------------------------------------------------------------------
 
 
-class ClockFunc:
+class FunctionType(enum.Enum):
+    NoFunc = enum.auto()
+    Function = enum.auto()
 
-    def call(self, interpreter: 'Interpreter', arguments: List):
-        return time.perf_counter()
 
-    def arity(self):
-        return 0
+class Resolver:
 
-    def __str__(self):
-        return "<builtin fn: clock>"
+    def __init__(self, interpreter: 'Interpreter'):
+        self.interpreter = interpreter
+        self.scopes = list()
+        self.current_function = FunctionType.NoFunc
+
+    def resolve_program(self, program: List[Stmt]):
+        for statement in program:
+            self.resolve(statement)
+
+    def begin_scope(self):
+        self.scopes.append(dict())
+
+    def end_scope(self):
+        self.scopes.pop()
+
+    def resolve(self, item: Union[Stmt, Expr]):
+        if isinstance(item, BlockStmt):
+            self.resolve_block_stmt(item)
+        elif isinstance(item, VarStmt):
+            self.resolve_var_stmt(item)
+        elif isinstance(item, VariableExpr):
+            self.resolve_var_expr(item)
+        elif isinstance(item, AssignExpr):
+            self.resolve_assign_expr(item)
+        elif isinstance(item, FunctionStmt):
+            self.resolve_function_stmt(item)
+        elif isinstance(item, ExpressionStmt):
+            self.resolve_expression_stmt(item)
+        elif isinstance(item, IfStmt):
+            self.resolve_if_stmt(item)
+        elif isinstance(item, PrintStmt):
+            self.resolve_print_stmt(item)
+        elif isinstance(item, ReturnStmt):
+            self.resolve_return_stmt(item)
+        elif isinstance(item, WhileStmt):
+            self.resolve_while_stmt(item)
+        elif isinstance(item, BinaryExpr):
+            self.resolve_binary_expr(item)
+        elif isinstance(item, CallExpr):
+            self.resolve_call_expr(item)
+        elif isinstance(item, GroupingExpr):
+            self.resolve_grouping_expr(item)
+        elif isinstance(item, LiteralExpr):
+            self.resolve_literal_expr(item)
+        elif isinstance(item, LogicalExpr):
+            self.resolve_logical_expr(item)
+        elif isinstance(item, UnaryExpr):
+            self.resolve_unary_expr(item)
+        else:
+            print('error!')
+
+    def resolve_list(self, statements: List[Stmt]):
+        for statement in statements:
+            self.resolve(statement)
+
+    def resolve_block_stmt(self, stmt: BlockStmt):
+        self.begin_scope()
+        self.resolve_list(stmt.statements)
+        self.end_scope()
+
+    def resolve_var_stmt(self, stmt: VarStmt):
+        self.declare(stmt.name)
+        if stmt.initializer is not None:
+            self.resolve(stmt.initializer)
+        self.define(stmt.name)
+
+    def resolve_var_expr(self, expr: VariableExpr):
+        if self.scopes:
+            if expr.name.lexeme in self.scopes[-1]:
+                if self.scopes[-1][expr.name.lexeme] == False:
+                    parsing_error(
+                        expr.name,
+                        "Cannot read local variable in its own initializer."
+                    )
+        self.resolve_local(expr, expr.name)
+
+    def resolve_assign_expr(self, expr: AssignExpr):
+        self.resolve(expr.value)
+        self.resolve_local(expr, expr.name)
+
+    def resolve_function_stmt(self, stmt: FunctionStmt):
+        self.declare(stmt.name)
+        self.define(stmt.name)
+        self.resolve_function(stmt, FunctionType.Function)
+
+    def resolve_function(self, stmt: FunctionStmt, type: FunctionType):
+        enclosing_function = self.current_function
+        self.current_function = type
+        self.begin_scope()
+        for param in stmt.parameters:
+            self.declare(param)
+            self.define(param)
+        self.resolve_list(stmt.body)
+        self.end_scope()
+        self.current_function = enclosing_function
+
+    def resolve_expression_stmt(self, stmt: ExpressionStmt):
+        self.resolve(stmt.expression)
+
+    def resolve_if_stmt(self, stmt: IfStmt):
+        self.resolve(stmt.condition)
+        self.resolve(stmt.then_branch)
+        if stmt.else_branch is not None:
+            self.resolve(stmt.else_branch)
+
+    def resolve_print_stmt(self, stmt: PrintStmt):
+        self.resolve(stmt.expression)
+
+    def resolve_return_stmt(self, stmt: ReturnStmt):
+        if self.current_function == FunctionType.NoFunc:
+            parsing_error(stmt.keyword, "Cannot return from top-level code.")
+        if stmt.value is not None:
+            self.resolve(stmt.value)
+
+    def resolve_while_stmt(self, stmt: WhileStmt):
+        self.resolve(stmt.condition)
+        self.resolve(stmt.body)
+
+    def resolve_binary_expr(self, expr: BinaryExpr):
+        self.resolve(expr.left)
+        self.resolve(expr.right)
+
+    def resolve_call_expr(self, expr: CallExpr):
+        self.resolve(expr.callee)
+        for arg in expr.arguments:
+            self.resolve(arg)
+
+    def resolve_grouping_expr(self, expr: GroupingExpr):
+        self.resolve(expr.expression)
+
+    def resolve_literal_expr(self, expr: LiteralExpr):
+        pass
+
+    def resolve_logical_expr(self, expr: LogicalExpr):
+        self.resolve(expr.left)
+        self.resolve(expr.right)
+
+    def resolve_unary_expr(self, expr: UnaryExpr):
+        self.resolve(expr.right)
+
+    def declare(self, name: Token):
+        if len(self.scopes) == 0:
+            return
+        scope = self.scopes[-1]
+        if name.lexeme in scope:
+            parsing_error(
+                name,
+                "Variable with this name already declared in this scope."
+            )
+        scope[name.lexeme] = False
+
+    def define(self, name: Token):
+        if len(self.scopes) == 0:
+            return
+        self.scopes[-1][name.lexeme] = True
+
+    def resolve_local(self, expr: Expr, name: Token):
+        for i in range(len(self.scopes) - 1, -1, -1):
+            if name.lexeme in self.scopes[i]:
+                self.interpreter.resolve(expr, len(self.scopes) - 1 - i)
+                return
 
 
 # ------------------------------------------------------------------------------
@@ -704,6 +903,11 @@ class RuntimeError(Exception):
     def __init__(self, token: Token, message: str):
         self.token = token
         self.message = message
+
+
+class Return(Exception):
+    def __init__(self, value):
+        self.value = value
 
 
 class Environment:
@@ -722,6 +926,15 @@ class Environment:
             return self.enclosing.get(name)
         raise RuntimeError(name, f"Undefined variable '{name.lexeme}'.")
 
+    def get_at(self, distance: int, name: str):
+        return self.ancestor(distance).values[name]
+
+    def ancestor(self, distance: int):
+        environment = self
+        for i in range(distance):
+            environment = environment.enclosing
+        return environment
+
     def assign(self, name: Token, value: Any):
         if name.lexeme in self.values:
             self.values[name.lexeme] = value
@@ -731,20 +944,35 @@ class Environment:
             return
         raise RuntimeError(name, f"Undefined variable '{name.lexeme}'.")
 
+    def assign_at(self, distance: int, name: Token, value: Any):
+        self.ancestor(distance).values[name.lexeme] = value
+
+    def __str__(self):
+        out = str(self.values)
+        if self.enclosing is not None:
+            out += "\n" + str(self.enclosing)
+        else:
+            out += "\n No Enclosing"
+        return out
+
 
 class Interpreter:
 
     def __init__(self):
-        self.environment = Environment()
         self.globals = Environment()
-        self.globals.define("clock", ClockFunc())
+        self.globals.define("clock", ClockBuiltin())
+        self.environment = self.globals
+        self.locals = dict()
 
-    def interpret(self, statements):
+    def interpret(self, program: List[Stmt]):
         try:
-            for statement in statements:
+            for statement in program:
                 self.execute(statement)
         except RuntimeError as error:
             runtime_error(error)
+
+    def resolve(self, expr: Expr, depth: int):
+        self.locals[expr] = depth
 
     # ------------------------------------------------------------------------
     # Execute statements.
@@ -763,6 +991,10 @@ class Interpreter:
             self.exec_if_stmt(stmt)
         elif isinstance(stmt, WhileStmt):
             self.exec_while_stmt(stmt)
+        elif isinstance(stmt, FunctionStmt):
+            self.exec_function_stmt(stmt)
+        elif isinstance(stmt, ReturnStmt):
+            self.exec_return_stmt(stmt)
 
     def exec_expression_stmt(self, stmt: ExpressionStmt):
         self.eval(stmt.expression)
@@ -798,6 +1030,16 @@ class Interpreter:
     def exec_while_stmt(self, stmt: WhileStmt):
         while self.is_truthy(self.eval(stmt.condition)):
             self.execute(stmt.body)
+
+    def exec_function_stmt(self, stmt: FunctionStmt):
+        function = LoxFunction(stmt, self.environment)
+        self.environment.define(stmt.name.lexeme, function)
+
+    def exec_return_stmt(self, stmt: ReturnStmt):
+        value = None
+        if stmt.value is not None:
+            value = self.eval(stmt.value)
+        raise Return(value)
 
     # ------------------------------------------------------------------------
     # Evaluate expressions.
@@ -868,11 +1110,16 @@ class Interpreter:
             return self.is_equal(left, right)
 
     def eval_variable(self, expr: VariableExpr):
-        return self.environment.get(expr.name)
+        #return self.environment.get(expr.name)
+        return self.lookup_variable(expr.name, expr)
 
     def eval_assign(self, expr: AssignExpr):
         value = self.eval(expr.value)
-        self.environment.assign(expr.name, value)
+        if expr in self.locals:
+            distance = self.locals[expr]
+            self.environment.assign_at(distance, expr.name, value)
+        else:
+            self.globals.assign(expr.name, value)
         return value
 
     def eval_logical(self, expr: LogicalExpr):
@@ -948,6 +1195,51 @@ class Interpreter:
             return text
         return str(value)
 
+    def lookup_variable(self, name: Token, expr: Expr):
+        if expr in self.locals:
+            distance = self.locals[expr]
+            return self.environment.get_at(distance, name.lexeme)
+        return self.globals.get(name)
+
+
+class ClockBuiltin:
+
+    def call(self, interpreter: 'Interpreter', arguments: List):
+        return time.perf_counter()
+
+    def arity(self):
+        return 0
+
+    def __str__(self):
+        return "<builtin fn: clock>"
+
+
+class LoxFunction:
+
+    def __init__(self, declaration: FunctionStmt, closure: Environment):
+        self.declaration = declaration
+        self.closure = closure
+
+    def call(self, interpreter: Interpreter, arguments: List):
+        environment = Environment(self.closure)
+        for i in range(len(self.declaration.parameters)):
+            environment.define(
+                self.declaration.parameters[i].lexeme,
+                arguments[i]
+            )
+        try:
+            interpreter.exec_block(self.declaration.body, environment)
+        except Return as return_value:
+            return return_value.value
+        return None
+
+    def arity(self):
+        return len(self.declaration.parameters)
+
+    def __str__(self):
+        return f"<fn {declaration.name.lexeme}>"
+
+
 
 # ------------------------------------------------------------------------------
 # Main.
@@ -990,13 +1282,16 @@ def run(source):
 
     scanner = Scanner(source)
     tokens = scanner.scan_tokens()
-    #print(tokens)
     if had_lexing_error:
         return
 
     parser = Parser(tokens)
     statements = parser.parse()
-    #print(Printer().tostring(expr))
+    if had_parsing_error:
+        return
+
+    resolver = Resolver(interpreter)
+    resolver.resolve_program(statements)
     if had_parsing_error:
         return
 
