@@ -317,6 +317,19 @@ class CallExpr(Expr):
         self.arguments = arguments
 
 
+class GetExpr(Expr):
+    def __init__(self, object: Expr, name: Token):
+        self.object = object
+        self.name = name
+
+
+class SetExpr(Expr):
+    def __init__(self, object: Expr, name: Token, value: Expr):
+        self.object = object
+        self.name = name
+        self.value = value
+
+
 # ------------------------------------------------------------------------------
 # Statements.
 # ------------------------------------------------------------------------------
@@ -373,6 +386,12 @@ class ReturnStmt(Stmt):
         self.value = value
 
 
+class ClassStmt(Stmt):
+    def __init__(self, name: Token, methods: List[FunctionStmt]):
+        self.name = name
+        self.methods = methods
+
+
 # ------------------------------------------------------------------------------
 # Parser.
 # ------------------------------------------------------------------------------
@@ -404,6 +423,8 @@ class Parser:
                 return self.var_statement()
             if self.match(TokType.Fun):
                 return self.function("function")
+            if self.match(TokType.Class):
+                return self.class_statement()
             return self.statement()
         except ParsingError:
             self.synchronize()
@@ -518,6 +539,15 @@ class Parser:
         self.consume(TokType.Semicolon, "Expect ';' after return value.")
         return ReturnStmt(keyword, value)
 
+    def class_statement(self):
+        name = self.consume(TokType.Identifier, "Expect class name.")
+        self.consume(TokType.LeftBrace, "Expect '}' before class body.")
+        methods = list()
+        while not self.check(TokType.RightBrace) and not self.is_at_end():
+            methods.append(self.function("method"))
+        self.consume(TokType.RightBrace, "Expect '}' after class body.")
+        return ClassStmt(name, methods)
+
     # ------------------------------------------------------------------------
     # Expression parsers.
     # ------------------------------------------------------------------------
@@ -532,6 +562,8 @@ class Parser:
             value = self.assignment()
             if isinstance(expr, VariableExpr):
                 return AssignExpr(expr.name, value)
+            elif isinstance(expr, GetExpr):
+                return SetExpr(expr.object, expr.name, value)
             parsing_error(equals, "Invalid assignment target.")
         return expr
 
@@ -601,6 +633,12 @@ class Parser:
         while True:
             if self.match(TokType.LeftParen):
                 expr = self.finish_call(expr)
+            elif self.match(TokType.Dot):
+                name = self.consume(
+                    TokType.Identifier,
+                    "Expect property name after '.'."
+                )
+                expr = GetExpr(expr, name)
             else:
                 break
         return expr
@@ -779,8 +817,14 @@ class Resolver:
             self.resolve_logical_expr(item)
         elif isinstance(item, UnaryExpr):
             self.resolve_unary_expr(item)
+        elif isinstance(item, ClassStmt):
+            self.resolve_class_stmt(item)
+        elif isinstance(item, GetExpr):
+            self.resolve_get_expr(item)
+        elif isinstance(item, SetExpr):
+            self.resolve_set_expr(item)
         else:
-            print('error!')
+            print('resolver error!')
 
     def resolve_list(self, statements: List[Stmt]):
         for statement in statements:
@@ -893,6 +937,17 @@ class Resolver:
                 self.interpreter.resolve(expr, len(self.scopes) - 1 - i)
                 return
 
+    def resolve_class_stmt(self, stmt: ClassStmt):
+        self.declare(stmt.name)
+        self.define(stmt.name)
+
+    def resolve_get_expr(self, expr: GetExpr):
+        self.resolve(expr.object)
+
+    def resolve_set_expr(self, expr: SetExpr):
+        self.resolve(expr.value)
+        self.resolve(expr.object)
+
 
 # ------------------------------------------------------------------------------
 # Interpreter.
@@ -995,6 +1050,8 @@ class Interpreter:
             self.exec_function_stmt(stmt)
         elif isinstance(stmt, ReturnStmt):
             self.exec_return_stmt(stmt)
+        elif isinstance(stmt, ClassStmt):
+            self.exec_class_stmt(stmt)
 
     def exec_expression_stmt(self, stmt: ExpressionStmt):
         self.eval(stmt.expression)
@@ -1041,6 +1098,11 @@ class Interpreter:
             value = self.eval(stmt.value)
         raise Return(value)
 
+    def exec_class_stmt(self, stmt: ClassStmt):
+        self.environment.define(stmt.name.lexeme, None)
+        klass = LoxClass(stmt.name.lexeme)
+        self.environment.assign(stmt.name, klass)
+
     # ------------------------------------------------------------------------
     # Evaluate expressions.
     # ------------------------------------------------------------------------
@@ -1062,6 +1124,10 @@ class Interpreter:
             return self.eval_logical(expr)
         elif isinstance(expr, CallExpr):
             return self.eval_call(expr)
+        elif isinstance(expr, GetExpr):
+            return self.eval_get(expr)
+        elif isinstance(expr, SetExpr):
+            return self.eval_set(expr)
 
     def eval_literal(self, expr: LiteralExpr):
         return expr.value
@@ -1110,7 +1176,6 @@ class Interpreter:
             return self.is_equal(left, right)
 
     def eval_variable(self, expr: VariableExpr):
-        #return self.environment.get(expr.name)
         return self.lookup_variable(expr.name, expr)
 
     def eval_assign(self, expr: AssignExpr):
@@ -1146,6 +1211,20 @@ class Interpreter:
                 expr.paren,
                 f"Expected {callee.arity()} arguments, got {len(arguments)}.")
         return callee.call(self, arguments)
+
+    def eval_get(self, expr: GetExpr):
+        object = self.eval(expr.object)
+        if isinstance(object, LoxInstance):
+            return object.get(expr.name)
+        raise RuntimeError(expr.name, "Only instances have properties.")
+
+    def eval_set(self, expr: SetExpr):
+        object = self.eval(expr.object)
+        if not isinstance(object, LoxInstance):
+            raise RuntimeError(expr.name, "Only instances have fields.")
+        value = self.eval(expr.value)
+        object.set(expr.name, value)
+        return value
 
 
     # ------------------------------------------------------------------------
@@ -1239,6 +1318,39 @@ class LoxFunction:
     def __str__(self):
         return f"<fn {declaration.name.lexeme}>"
 
+
+class LoxClass:
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __str__(self):
+        return self.name
+
+    def call(self, interpreter: Interpreter, arguments: List):
+        instance = LoxInstance(self)
+        return instance
+
+    def arity(self):
+        return 0
+
+
+class LoxInstance:
+
+    def __init__(self, klass: LoxClass):
+        self.klass = klass
+        self.fields = dict()
+
+    def __str__(self):
+        return f"{self.klass.name} instance"
+
+    def get(self, name: Token):
+        if name.lexeme in self.fields:
+            return self.fields[name.lexeme]
+        raise RuntimeError(name, f"Undefined property '{name.lexeme}'.")
+
+    def set(self, name: Token, value: Any):
+        self.fields[name.lexeme] = value
 
 
 # ------------------------------------------------------------------------------

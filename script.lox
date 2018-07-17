@@ -1,12 +1,7 @@
+class Bagel {}
 
-var a = "global";
+var bagel = Bagel();
 
-{
-    fun showA() {
-        print a;
-    }
+bagel.foo = "bar";
 
-    showA();
-    var a = "block";
-    showA();
-}
+print bagel.foo;
