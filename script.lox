@@ -1,7 +1,14 @@
-class Bagel {}
 
-var bagel = Bagel();
+class Thing {
+    get_callback() {
+        fun localfunc() {
+            print this;
+        }
 
-bagel.foo = "bar";
+        return localfunc;
+    }
+}
 
-print bagel.foo;
+var callback = Thing().get_callback();
+
+callback();

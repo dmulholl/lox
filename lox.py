@@ -330,6 +330,11 @@ class SetExpr(Expr):
         self.value = value
 
 
+class ThisExpr(Expr):
+    def __init__(self, keyword: Token):
+        self.keyword = keyword
+
+
 # ------------------------------------------------------------------------------
 # Statements.
 # ------------------------------------------------------------------------------
@@ -662,6 +667,8 @@ class Parser:
             return LiteralExpr(True)
         if self.match(TokType.Nil):
             return LiteralExpr(None)
+        if self.match(TokType.This):
+            return ThisExpr(self.previous())
         if self.match(TokType.Number, TokType.String):
             return LiteralExpr(self.previous().literal)
         if self.match(TokType.LeftParen):
@@ -765,6 +772,13 @@ class Printer:
 class FunctionType(enum.Enum):
     NoFunc = enum.auto()
     Function = enum.auto()
+    Method = enum.auto()
+    Initializer = enum.auto()
+
+
+class ClassType(enum.Enum):
+    NoClass = enum.auto()
+    Class = enum.auto()
 
 
 class Resolver:
@@ -773,6 +787,7 @@ class Resolver:
         self.interpreter = interpreter
         self.scopes = list()
         self.current_function = FunctionType.NoFunc
+        self.current_class = ClassType.NoClass
 
     def resolve_program(self, program: List[Stmt]):
         for statement in program:
@@ -823,6 +838,8 @@ class Resolver:
             self.resolve_get_expr(item)
         elif isinstance(item, SetExpr):
             self.resolve_set_expr(item)
+        elif isinstance(item, ThisExpr):
+            self.resolve_this_expr(item)
         else:
             print('resolver error!')
 
@@ -887,6 +904,11 @@ class Resolver:
         if self.current_function == FunctionType.NoFunc:
             parsing_error(stmt.keyword, "Cannot return from top-level code.")
         if stmt.value is not None:
+            if self.current_function == FunctionType.Initializer:
+                parsing_error(
+                    stmt.keyword,
+                    "Cannot return a value from an initializer."
+                )
             self.resolve(stmt.value)
 
     def resolve_while_stmt(self, stmt: WhileStmt):
@@ -938,8 +960,19 @@ class Resolver:
                 return
 
     def resolve_class_stmt(self, stmt: ClassStmt):
+        enclosing_class = self.current_class
+        self.current_class = ClassType.Class
         self.declare(stmt.name)
         self.define(stmt.name)
+        self.begin_scope()
+        self.scopes[-1]["this"] = True
+        for method in stmt.methods:
+            declaration = FunctionType.Method
+            if method.name.lexeme == "init":
+                declaration = FunctionType.Initializer
+            self.resolve_function(method, declaration)
+        self.end_scope()
+        self.current_class = enclosing_class
 
     def resolve_get_expr(self, expr: GetExpr):
         self.resolve(expr.object)
@@ -947,6 +980,11 @@ class Resolver:
     def resolve_set_expr(self, expr: SetExpr):
         self.resolve(expr.value)
         self.resolve(expr.object)
+
+    def resolve_this_expr(self, expr: ThisExpr):
+        if self.current_class == ClassType.NoClass:
+            parsing_error(expr.keyword, "Cannot use 'this' outside of a class.")
+        self.resolve_local(expr, expr.keyword)
 
 
 # ------------------------------------------------------------------------------
@@ -1089,7 +1127,7 @@ class Interpreter:
             self.execute(stmt.body)
 
     def exec_function_stmt(self, stmt: FunctionStmt):
-        function = LoxFunction(stmt, self.environment)
+        function = LoxFunction(stmt, self.environment, False)
         self.environment.define(stmt.name.lexeme, function)
 
     def exec_return_stmt(self, stmt: ReturnStmt):
@@ -1100,7 +1138,12 @@ class Interpreter:
 
     def exec_class_stmt(self, stmt: ClassStmt):
         self.environment.define(stmt.name.lexeme, None)
-        klass = LoxClass(stmt.name.lexeme)
+        methods = dict()
+        for method in stmt.methods:
+            is_initializer = method.name.lexeme == "init"
+            function = LoxFunction(method, self.environment, is_initializer)
+            methods[method.name.lexeme] = function
+        klass = LoxClass(stmt.name.lexeme, methods)
         self.environment.assign(stmt.name, klass)
 
     # ------------------------------------------------------------------------
@@ -1128,6 +1171,8 @@ class Interpreter:
             return self.eval_get(expr)
         elif isinstance(expr, SetExpr):
             return self.eval_set(expr)
+        elif isinstance(expr, ThisExpr):
+            return self.lookup_variable(expr.keyword, expr)
 
     def eval_literal(self, expr: LiteralExpr):
         return expr.value
@@ -1295,9 +1340,10 @@ class ClockBuiltin:
 
 class LoxFunction:
 
-    def __init__(self, declaration: FunctionStmt, closure: Environment):
+    def __init__(self, declaration: FunctionStmt, closure: Environment, is_initializer: bool):
         self.declaration = declaration
         self.closure = closure
+        self.is_initializer = is_initializer
 
     def call(self, interpreter: Interpreter, arguments: List):
         environment = Environment(self.closure)
@@ -1309,7 +1355,11 @@ class LoxFunction:
         try:
             interpreter.exec_block(self.declaration.body, environment)
         except Return as return_value:
+            if self.is_initializer:
+                return self.closure.get_at(0, "this")
             return return_value.value
+        if self.is_initializer:
+            return self.closure.get_at(0, "this")
         return None
 
     def arity(self):
@@ -1318,21 +1368,37 @@ class LoxFunction:
     def __str__(self):
         return f"<fn {declaration.name.lexeme}>"
 
+    def bind(self, instance: 'LoxInstance'):
+        environment = Environment(self.closure)
+        environment.define("this", instance)
+        return LoxFunction(self.declaration, environment, self.is_initializer)
+
 
 class LoxClass:
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, methods):
         self.name = name
+        self.methods = methods
 
     def __str__(self):
         return self.name
 
     def call(self, interpreter: Interpreter, arguments: List):
         instance = LoxInstance(self)
+        if "init" in self.methods:
+            initializer = self.methods["init"]
+            initializer.bind(instance).call(interpreter, arguments)
         return instance
 
     def arity(self):
+        if "init" in self.methods:
+            return self.methods["init"].arity()
         return 0
+
+    def find_method(self, instance: 'LoxInstance', name: str):
+        if name in self.methods:
+            return self.methods[name].bind(instance)
+        return None
 
 
 class LoxInstance:
@@ -1347,6 +1413,9 @@ class LoxInstance:
     def get(self, name: Token):
         if name.lexeme in self.fields:
             return self.fields[name.lexeme]
+        method = self.klass.find_method(self, name.lexeme)
+        if method is  not None:
+            return method
         raise RuntimeError(name, f"Undefined property '{name.lexeme}'.")
 
     def set(self, name: Token, value: Any):
