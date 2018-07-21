@@ -7,7 +7,7 @@ import sys
 import enum
 import time
 
-from typing import List, Any, Union
+from typing import List, Any, Union, Dict
 
 
 # ------------------------------------------------------------------------------
@@ -335,6 +335,12 @@ class ThisExpr(Expr):
         self.keyword = keyword
 
 
+class SuperExpr(Expr):
+    def __init__(self, keyword: Token, method: Token):
+        self.keyword = keyword
+        self.method = method
+
+
 # ------------------------------------------------------------------------------
 # Statements.
 # ------------------------------------------------------------------------------
@@ -392,9 +398,10 @@ class ReturnStmt(Stmt):
 
 
 class ClassStmt(Stmt):
-    def __init__(self, name: Token, methods: List[FunctionStmt]):
+    def __init__(self, name: Token, superclass: VariableExpr, methods: List[FunctionStmt]):
         self.name = name
         self.methods = methods
+        self.superclass = superclass
 
 
 # ------------------------------------------------------------------------------
@@ -546,12 +553,16 @@ class Parser:
 
     def class_statement(self):
         name = self.consume(TokType.Identifier, "Expect class name.")
-        self.consume(TokType.LeftBrace, "Expect '}' before class body.")
+        superclass = None
+        if self.match(TokType.Less):
+            self.consume(TokType.Identifier, "Expect superclass name.")
+            superclass = VariableExpr(self.previous())
+        self.consume(TokType.LeftBrace, "Expect '{' before class body.")
         methods = list()
         while not self.check(TokType.RightBrace) and not self.is_at_end():
             methods.append(self.function("method"))
         self.consume(TokType.RightBrace, "Expect '}' after class body.")
-        return ClassStmt(name, methods)
+        return ClassStmt(name, superclass, methods)
 
     # ------------------------------------------------------------------------
     # Expression parsers.
@@ -667,6 +678,14 @@ class Parser:
             return LiteralExpr(True)
         if self.match(TokType.Nil):
             return LiteralExpr(None)
+        if self.match(TokType.Super):
+            keyword = self.previous()
+            self.consume(TokType.Dot, "Expect '.' after 'super'.")
+            method = self.consume(
+                TokType.Identifier,
+                "Expect superclass method name."
+            )
+            return SuperExpr(keyword, method)
         if self.match(TokType.This):
             return ThisExpr(self.previous())
         if self.match(TokType.Number, TokType.String):
@@ -779,6 +798,7 @@ class FunctionType(enum.Enum):
 class ClassType(enum.Enum):
     NoClass = enum.auto()
     Class = enum.auto()
+    Subclass = enum.auto()
 
 
 class Resolver:
@@ -840,6 +860,8 @@ class Resolver:
             self.resolve_set_expr(item)
         elif isinstance(item, ThisExpr):
             self.resolve_this_expr(item)
+        elif isinstance(item, SuperExpr):
+            self.resolve_super_expr(item)
         else:
             print('resolver error!')
 
@@ -963,7 +985,13 @@ class Resolver:
         enclosing_class = self.current_class
         self.current_class = ClassType.Class
         self.declare(stmt.name)
+        if stmt.superclass is not None:
+            self.current_class = ClassType.Subclass
+            self.resolve(stmt.superclass)
         self.define(stmt.name)
+        if stmt.superclass is not None:
+            self.begin_scope()
+            self.scopes[-1]["super"] = True
         self.begin_scope()
         self.scopes[-1]["this"] = True
         for method in stmt.methods:
@@ -972,6 +1000,8 @@ class Resolver:
                 declaration = FunctionType.Initializer
             self.resolve_function(method, declaration)
         self.end_scope()
+        if stmt.superclass is not None:
+            self.end_scope()
         self.current_class = enclosing_class
 
     def resolve_get_expr(self, expr: GetExpr):
@@ -984,6 +1014,20 @@ class Resolver:
     def resolve_this_expr(self, expr: ThisExpr):
         if self.current_class == ClassType.NoClass:
             parsing_error(expr.keyword, "Cannot use 'this' outside of a class.")
+        self.resolve_local(expr, expr.keyword)
+
+    def resolve_super_expr(self, expr: SuperExpr):
+        if self.current_class == ClassType.NoClass:
+            parsing_error(
+                expr.keyword,
+                "Cannot use 'super' outside of a class."
+            )
+        elif self.current_class != ClassType.Subclass:
+            parsing_error(
+                expr.keyword,
+                "Cannot use 'super' in a class with no superclass."
+            )
+
         self.resolve_local(expr, expr.keyword)
 
 
@@ -1137,13 +1181,26 @@ class Interpreter:
         raise Return(value)
 
     def exec_class_stmt(self, stmt: ClassStmt):
+        superclass = None
+        if stmt.superclass is not None:
+            superclass = self.eval(stmt.superclass)
+            if not isinstance(superclass, LoxClass):
+                raise RuntimeError(
+                    stmt.superclass.name,
+                    "Superclass must be a class."
+                )
         self.environment.define(stmt.name.lexeme, None)
+        if stmt.superclass is not None:
+            self.environment = Environment(self.environment)
+            self.environment.define("super", superclass)
         methods = dict()
         for method in stmt.methods:
             is_initializer = method.name.lexeme == "init"
             function = LoxFunction(method, self.environment, is_initializer)
             methods[method.name.lexeme] = function
-        klass = LoxClass(stmt.name.lexeme, methods)
+        klass = LoxClass(stmt.name.lexeme, superclass, methods)
+        if superclass is not None:
+            self.environment = self.environment.enclosing
         self.environment.assign(stmt.name, klass)
 
     # ------------------------------------------------------------------------
@@ -1173,6 +1230,8 @@ class Interpreter:
             return self.eval_set(expr)
         elif isinstance(expr, ThisExpr):
             return self.lookup_variable(expr.keyword, expr)
+        elif isinstance(expr, SuperExpr):
+            return self.eval_super(expr)
 
     def eval_literal(self, expr: LiteralExpr):
         return expr.value
@@ -1270,6 +1329,18 @@ class Interpreter:
         value = self.eval(expr.value)
         object.set(expr.name, value)
         return value
+
+    def eval_super(self, expr: SuperExpr):
+        distance = self.locals.get(expr)
+        superclass = self.environment.get_at(distance, "super")
+        object = self.environment.get_at(distance - 1, "this")
+        method = superclass.find_method(object, expr.method.lexeme)
+        if method is None:
+            raise RuntimeError(
+                expr.method,
+                f"Undefined property '{expr.method.lexeme}'."
+            )
+        return method
 
 
     # ------------------------------------------------------------------------
@@ -1376,9 +1447,10 @@ class LoxFunction:
 
 class LoxClass:
 
-    def __init__(self, name: str, methods):
+    def __init__(self, name: str, superclass: 'LoxClass', methods: Dict[str, LoxFunction]):
         self.name = name
         self.methods = methods
+        self.superclass = superclass
 
     def __str__(self):
         return self.name
@@ -1398,6 +1470,8 @@ class LoxClass:
     def find_method(self, instance: 'LoxInstance', name: str):
         if name in self.methods:
             return self.methods[name].bind(instance)
+        if self.superclass is not None:
+            return self.superclass.find_method(instance, name)
         return None
 
 
