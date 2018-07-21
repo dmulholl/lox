@@ -1,15 +1,1 @@
-
-class Doughnut {
-    cook() {
-        print "cooking...";
-    }
-}
-
-class BostonCream < Doughnut {
-    cook() {
-        super.cook();
-        print "in subclass";
-    }
-}
-
-BostonCream().cook();
+print "hello world";
