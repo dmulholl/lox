@@ -415,7 +415,7 @@ class ParsingError(Exception):
 
 class Parser:
 
-    def __init__(self, tokens):
+    def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.current = 0
 
@@ -425,9 +425,9 @@ class Parser:
             statements.append(self.declaration())
         return statements
 
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # Statement parsers.
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def declaration(self):
         try:
@@ -564,9 +564,9 @@ class Parser:
         self.consume(TokType.RightBrace, "Expect '}' after class body.")
         return ClassStmt(name, superclass, methods)
 
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # Expression parsers.
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def expression(self):
         return self.assignment()
@@ -699,9 +699,9 @@ class Parser:
         parsing_error(self.peek(), "Expect expression.")
         raise ParsingError()
 
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # Helpers
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def match(self, *toktypes):
         for toktype in toktypes:
@@ -1111,9 +1111,9 @@ class Interpreter:
     def resolve(self, expr: Expr, depth: int):
         self.locals[expr] = depth
 
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # Execute statements.
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def execute(self, stmt: Stmt):
         if isinstance(stmt, ExpressionStmt):
@@ -1203,9 +1203,9 @@ class Interpreter:
             self.environment = self.environment.enclosing
         self.environment.assign(stmt.name, klass)
 
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # Evaluate expressions.
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def eval(self, expr: Expr):
         if isinstance(expr, LiteralExpr):
@@ -1343,9 +1343,9 @@ class Interpreter:
         return method
 
 
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # Helpers.
-    # ------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def is_truthy(self, value):
         if value is None:
@@ -1437,7 +1437,7 @@ class LoxFunction:
         return len(self.declaration.parameters)
 
     def __str__(self):
-        return f"<fn {declaration.name.lexeme}>"
+        return f"<fn {self.declaration.name.lexeme}>"
 
     def bind(self, instance: 'LoxInstance'):
         environment = Environment(self.closure)
