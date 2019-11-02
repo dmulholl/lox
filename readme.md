@@ -4,6 +4,6 @@ A complete, working implementation of [Bob Nystrom's Lox programming language][l
 
 Run a script by supplying its filepath to the interpreter as a command line argument:
 
-    $ ./lox.py script.lox
+    $ ./lox script.lox
 
 [lox]: http://craftinginterpreters.com
