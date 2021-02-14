@@ -6,13 +6,11 @@ Name            Operators           Associates
 
 Call            () .                Left
 Unary           ! -                 Right
-*Bitwise        & |                 Left
 Multiplication  / *                 Left
 Addition        - +                 Left
 Comparison      > >= < <=           Left
 Equality        == !=               Left
 Logical And     and                 Left
 Logical Or      or                  Left
-*Ternary        ?:                  None
 Assignment      =                   Right
 
