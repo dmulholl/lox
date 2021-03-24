@@ -7,8 +7,6 @@
 typedef struct Obj Obj;
 typedef struct ObjString ObjString;
 
-#define NAN_BOXING
-
 #ifdef NAN_BOXING
 
 #define SIGN_BIT ((uint64_t)0x8000000000000000)
